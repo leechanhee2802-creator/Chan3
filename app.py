@@ -68,7 +68,7 @@ FOOD_DB: Dict[str, Dict[str, float]] = {
 }
 
 # HuggingFace 음식 인식 모델 ID (falconsai)
-HF_MODEL_ID = "falconsai/food-image-classification"
+HF_MODEL_ID = "microsoft/resnet-50"
 
 
 # -----------------------------------------------------------
