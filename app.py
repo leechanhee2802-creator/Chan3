@@ -4,9 +4,7 @@ from typing import Dict, Tuple, List
 import streamlit as st
 import pandas as pd
 from PIL import Image
-
-from transformers import pipeline
-
+import requests
 
 # -----------------------------------------------------------
 # 기본 페이지 설정
@@ -55,7 +53,6 @@ st.markdown(
 # -----------------------------------------------------------
 # 음식 영양 DB (100g 기준 예시)
 # kcal, carb, protein, fat (per 100g)
-# 실제 서비스에서는 더 많은 음식 + 외부 DB로 확장
 # -----------------------------------------------------------
 FOOD_DB: Dict[str, Dict[str, float]] = {
     "백미밥":     {"kcal": 150, "carb": 34, "protein": 3,  "fat": 0.3},
@@ -70,19 +67,39 @@ FOOD_DB: Dict[str, Dict[str, float]] = {
     "김치찌개":   {"kcal": 80, "carb": 6, "protein": 5, "fat": 4},
 }
 
+HF_MODEL_ID = "nateraw/food101"  # 음식 특화 모델
+
 
 # -----------------------------------------------------------
-# HuggingFace Food-101 이미지 분류 모델 로딩
-# (캐시해서 한 번만 다운로드)
+# HuggingFace Inference API 호출
 # -----------------------------------------------------------
-@st.cache_resource
-def load_food_classifier():
+@st.cache_data(show_spinner=False)
+def call_hf_api(image_bytes: bytes, top_k: int = 5) -> List[Dict]:
     """
-    nateraw/food101 모델 사용 (Food-101 데이터셋에 학습된 이미지 분류기)
-    첫 실행 시 모델을 다운로드하고, 이후에는 캐시 사용.
+    HuggingFace Inference API로 Food-101 모델을 호출.
+    st.secrets["HF_TOKEN"]이 있으면 Authorization 헤더에 사용.
     """
-    clf = pipeline("image-classification", model="nateraw/food101")
-    return clf
+    token = st.secrets.get("HF_TOKEN", None)
+
+    headers = {"Accept": "application/json"}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+
+    params = {"top_k": top_k}
+
+    response = requests.post(
+        f"https://api-inference.huggingface.co/models/{HF_MODEL_ID}",
+        headers=headers,
+        params=params,
+        data=image_bytes,
+        timeout=60,
+    )
+    response.raise_for_status()
+    data = response.json()
+    # 일부 모델은 {"error": "..."} 형식으로 줄 수도 있어서 처리
+    if isinstance(data, dict) and "error" in data:
+        raise RuntimeError(data["error"])
+    return data
 
 
 def analyze_food_image(image: Image.Image, top_k: int = 5) -> List[Dict]:
@@ -91,9 +108,20 @@ def analyze_food_image(image: Image.Image, top_k: int = 5) -> List[Dict]:
     상위 top_k개의 예측 결과를 반환.
     각 결과는 {"label": str, "score": float} 형태.
     """
-    classifier = load_food_classifier()
-    preds = classifier(image, top_k=top_k)
-    return preds
+    buf = io.BytesIO()
+    image.save(buf, format="JPEG")
+    image_bytes = buf.getvalue()
+
+    try:
+        preds = call_hf_api(image_bytes, top_k=top_k)
+        # 예상 형식: [{"label": "...", "score": 0.98}, ...]
+        if not isinstance(preds, list):
+            return []
+        return preds
+    except Exception as e:
+        st.error("이미지 인식 API 호출 중 오류가 발생했습니다. 나중에 다시 시도해 주세요.")
+        st.write("디버그용 메시지:", str(e))
+        return []
 
 
 # -----------------------------------------------------------
@@ -206,20 +234,23 @@ with col_img:
         with st.spinner("🍽️ 음식 인식 중... (Food-101 모델)"):
             preds = analyze_food_image(image, top_k=5)
 
-        # 예측 결과 텍스트 구성
-        lines = []
-        for p in preds:
-            label = p["label"].replace("_", " ")
-            score = round(p["score"] * 100, 1)
-            lines.append(f"- {label} ({score}%)")
-        preds_text = "\n".join(lines)
+        if preds:
+            lines = []
+            for p in preds:
+                label = str(p.get("label", "")).replace("_", " ")
+                score = p.get("score", 0.0)
+                score_pct = round(float(score) * 100, 1)
+                lines.append(f"- {label} ({score_pct}%)")
+            preds_text = "\n".join(lines)
 
-        st.markdown("#### 🔍 AI가 추측한 음식 (Top-5)")
-        st.markdown(
-            f"<pre style='background:#020617;padding:0.75rem;border-radius:0.5rem;border:1px solid #1f2937;font-size:0.85rem;'>{preds_text}</pre>",
-            unsafe_allow_html=True,
-        )
-        st.caption("※ 영어로 나온 음식 이름은 참고용입니다. 실제 선택은 아래 폼에서 직접 입력/선택해 주세요.")
+            st.markdown("#### 🔍 AI가 추측한 음식 (Top-5)")
+            st.markdown(
+                f"<pre style='background:#020617;padding:0.75rem;border-radius:0.5rem;border:1px solid #1f2937;font-size:0.85rem;'>{preds_text}</pre>",
+                unsafe_allow_html=True,
+            )
+            st.caption("※ 영어로 나온 음식 이름은 참고용입니다. 실제 선택은 아래 폼에서 직접 입력/선택해 주세요.")
+        else:
+            st.warning("AI 예측 결과를 가져오지 못했습니다. 나중에 다시 시도해 주세요.")
 
 
 # ------------------ 음식 입력 & 영양 계산 ------------------
@@ -235,7 +266,6 @@ with col_form:
         unsafe_allow_html=True,
     )
 
-    # 음식 입력용 컨테이너
     food_rows = []
 
     if "num_rows" not in st.session_state:
@@ -270,7 +300,6 @@ with col_form:
                     help="DB에 없는 음식은 여기에 한글/영어로 적어두면 기록용으로 표시됩니다.",
                 )
 
-            # 실제로 사용할 이름 결정
             final_name = custom_name.strip() if custom_name.strip() else food_name
             food_rows.append((final_name, grams))
 
@@ -296,7 +325,6 @@ with col_form:
         if not name or name == "(선택 안 함)" or grams <= 0:
             continue
 
-        # FOOD_DB에 없는 음식이면 영양 계산은 0으로 처리 (기록만)
         macros = calc_macros(name if name in FOOD_DB else "", grams)
         total_kcal += macros["kcal"]
         total_carb += macros["carb"]
@@ -338,7 +366,6 @@ with col_form:
         col_c.metric("총 단백질", f"{round(total_protein, 1)} g")
         col_d.metric("총 지방", f"{round(total_fat, 1)} g")
 
-        # 단백질 권장량 대비 비율
         if protein_total > 0:
             ratio = round(total_protein / protein_total * 100, 1)
             st.markdown(
