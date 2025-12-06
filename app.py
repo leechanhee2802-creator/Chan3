@@ -67,7 +67,8 @@ FOOD_DB: Dict[str, Dict[str, float]] = {
     "김치찌개":   {"kcal": 80, "carb": 6, "protein": 5, "fat": 4},
 }
 
-HF_MODEL_ID = "nateraw/food101"  # 음식 특화 모델
+# HuggingFace 음식 인식 모델 ID (falconsai)
+HF_MODEL_ID = "falconsai/food-image-classification"
 
 
 # -----------------------------------------------------------
@@ -76,27 +77,29 @@ HF_MODEL_ID = "nateraw/food101"  # 음식 특화 모델
 @st.cache_data(show_spinner=False)
 def call_hf_api(image_bytes: bytes, top_k: int = 5) -> List[Dict]:
     """
-    HuggingFace Inference API로 Food-101 모델을 호출.
+    HuggingFace Inference API로 음식 인식 모델을 호출.
     st.secrets["HF_TOKEN"]이 있으면 Authorization 헤더에 사용.
     """
     token = st.secrets.get("HF_TOKEN", None)
 
-    headers = {"Accept": "application/json"}
+    headers = {
+        "Accept": "application/json",
+        "Content-Type": "image/jpeg",
+    }
     if token:
         headers["Authorization"] = f"Bearer {token}"
 
-    params = {"top_k": top_k}
-
+    # 일부 모델은 top_k를 쿼리 파라미터 대신 JSON/헤더로 안 받아도
+    # 상위 결과를 기본적으로 여러 개 반환하므로, 여기서는 파라미터 제외
     response = requests.post(
         f"https://api-inference.huggingface.co/models/{HF_MODEL_ID}",
         headers=headers,
-        params=params,
         data=image_bytes,
         timeout=60,
     )
     response.raise_for_status()
     data = response.json()
-    # 일부 모델은 {"error": "..."} 형식으로 줄 수도 있어서 처리
+    # 오류 형식 처리
     if isinstance(data, dict) and "error" in data:
         raise RuntimeError(data["error"])
     return data
@@ -104,7 +107,7 @@ def call_hf_api(image_bytes: bytes, top_k: int = 5) -> List[Dict]:
 
 def analyze_food_image(image: Image.Image, top_k: int = 5) -> List[Dict]:
     """
-    업로드된 이미지를 Food-101 분류기로 분석하고
+    업로드된 이미지를 음식 분류 모델로 분석하고
     상위 top_k개의 예측 결과를 반환.
     각 결과는 {"label": str, "score": float} 형태.
     """
@@ -114,10 +117,11 @@ def analyze_food_image(image: Image.Image, top_k: int = 5) -> List[Dict]:
 
     try:
         preds = call_hf_api(image_bytes, top_k=top_k)
-        # 예상 형식: [{"label": "...", "score": 0.98}, ...]
         if not isinstance(preds, list):
             return []
-        return preds
+        # 필요하면 top_k만큼 자르기
+        preds = sorted(preds, key=lambda x: x.get("score", 0), reverse=True)
+        return preds[:top_k]
     except Exception as e:
         st.error("이미지 인식 API 호출 중 오류가 발생했습니다. 나중에 다시 시도해 주세요.")
         st.write("디버그용 메시지:", str(e))
@@ -231,7 +235,7 @@ with col_img:
         image = Image.open(uploaded_file).convert("RGB")
         st.image(image, caption="업로드된 사진", use_column_width=True)
 
-        with st.spinner("🍽️ 음식 인식 중... (Food-101 모델)"):
+        with st.spinner("🍽️ 음식 인식 중... (falconsai 모델)"):
             preds = analyze_food_image(image, top_k=5)
 
         if preds:
@@ -337,22 +341,21 @@ with col_form:
                 "양(g)": grams,
                 "칼로리(kcal)": macros["kcal"],
                 "탄수화물(g)": macros["carb"],
-                "단백질(g)": macros["protein"],
-                "지방(g)": macros["fat"],
+                "단백질(g)": "{:.1f}".format(macros["protein"]),
+                "지방(g)": "{:.1f}".format(macros["fat"]),
             }
         )
 
     if result_rows:
         st.markdown("### ✅ 식단 영양 분석 결과")
         df = pd.DataFrame(result_rows)
+        # protein/fat은 이미 문자열 포맷팅 했으니 양/칼로리/탄수만 포맷
         st.dataframe(
             df.style.format(
                 {
-                    "양(g)": "{:.0f}",
-                    "칼로리(kcal)": "{:.1f}",
-                    "탄수화물(g)": "{:.1f}",
-                    "단백질(g)": "{:.1f}",
-                    "지방(g)": "{:.1f}",
+                    "양(g)": "{:.0f}".format,
+                    "칼로리(kcal)": "{:.1f}".format,
+                    "탄수화물(g)": "{:.1f}".format,
                 }
             ),
             use_container_width=True,
