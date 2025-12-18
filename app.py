@@ -49,34 +49,16 @@ def analyze_one_symbol(
     horizon: int,
 ) -> dict:
     df = load_daily(symbol, period=period)
+    if df.empty or len(df) < max(60, lookback + 10):
+        return {"symbol": symbol, "error": "데이터 부족"}
 
-# 1) 완전 빈 경우
-if df is None or df.empty:
-    return {"symbol": symbol, "error": "데이터 부족(빈 데이터)"}
+    price = safe_last_price(df)
+    if price is None:
+        return {"symbol": symbol, "error": "가격 없음"}
 
-# 2) lookback 자동 조절 (기간 짧거나 결측이 있어도 동작)
-#    회귀채널은 최소 60봉은 있어야 의미가 있어서 60은 하한으로 둠
-min_bars = 80
-if len(df) < min_bars:
-    return {"symbol": symbol, "error": f"데이터 부족({len(df)}봉 < {min_bars}봉)"}
-
-effective_lookback = int(min(lookback, len(df) - 20))
-if effective_lookback < 60:
-    effective_lookback = 60
-
-price = safe_last_price(df)
-if price is None:
-    return {"symbol": symbol, "error": "가격 없음"}
-
-ch = compute_regression_channel(
-    df,
-    lookback=effective_lookback,
-    use_log=use_log,
-    k_list=[-2, -1, 0, 1, 2],
-)
-if not ch:
-    return {"symbol": symbol, "error": "채널 계산 실패"}
-
+    ch = compute_regression_channel(df, lookback=lookback, use_log=use_log, k_list=[-2,-1,0,1,2])
+    if not ch:
+        return {"symbol": symbol, "error": "채널 계산 실패"}
 
     rail_hint = pick_nearest_rails(ch, price)
     sig = decide_signal_from_channel(
