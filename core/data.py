@@ -1,32 +1,48 @@
-import yfinance as yf
 import pandas as pd
-import streamlit as st
+import yfinance as yf
+import time
 
-@st.cache_data(ttl=60 * 30, show_spinner=False)
-def load_daily(symbol: str, period: str = "3y") -> pd.DataFrame:
-    """
-    일봉 데이터 로드. auto_adjust=False(원본 OHLC) 유지.
-    """
+def load_daily(symbol: str, period: str = "2y") -> pd.DataFrame:
     symbol = (symbol or "").strip().upper()
     if not symbol:
         return pd.DataFrame()
+
+    # 1️⃣ Yahoo download (history보다 안정적)
+    for _ in range(3):
+        try:
+            df = yf.download(
+                tickers=symbol,
+                period=period,
+                interval="1d",
+                auto_adjust=False,
+                progress=False,
+                threads=False,
+            )
+            if isinstance(df, pd.DataFrame) and not df.empty:
+                df.columns = [c.capitalize() for c in df.columns]
+                need = ["Open", "High", "Low", "Close", "Volume"]
+                if all(c in df.columns for c in need):
+                    return df[need].dropna()
+                return df.dropna()
+        except Exception:
+            pass
+        time.sleep(0.8)
+
+    # 2️⃣ Stooq 백업 (Yahoo 막히면 여기서라도 받음)
     try:
-        t = yf.Ticker(symbol)
-        df = t.history(period=period, interval="1d", auto_adjust=False)
+        stooq = f"{symbol}.US".lower()
+        url = f"https://stooq.com/q/d/l/?s={stooq}&i=d"
+        df2 = pd.read_csv(url)
+        if df2 is None or df2.empty:
+            return pd.DataFrame()
+        df2["Date"] = pd.to_datetime(df2["Date"])
+        df2 = df2.set_index("Date").sort_index()
+        return df2[["Open", "High", "Low", "Close", "Volume"]].dropna()
     except Exception:
         return pd.DataFrame()
-    if df is None or df.empty:
-        return pd.DataFrame()
 
-    df = df.rename(columns={c: c.title() for c in df.columns})
-    keep = [c for c in ["Open", "High", "Low", "Close", "Volume"] if c in df.columns]
-    df = df[keep].dropna()
-    df.index = pd.to_datetime(df.index)
-    return df
 
-def safe_last_price(df: pd.DataFrame) -> float | None:
-    if df is None or df.empty:
-        return None
+def safe_last_price(df: pd.DataFrame):
     try:
         return float(df["Close"].iloc[-1])
     except Exception:
