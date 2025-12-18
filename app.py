@@ -149,7 +149,7 @@ def analyze_one_symbol(
         "tp_sl_n": bt.get("n"),
         "tp_sl_avg_days": bt.get("avg_days"),
         "tp_sl_avg_ret": bt.get("avg_ret"),
-        "channel_lookback": lookback,
+        "channel_lookback": effective_lookback,
         "use_log": use_log,
         "tp_pct": tp_pct,
         "sl_pct": sl_pct,
