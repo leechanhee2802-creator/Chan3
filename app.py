@@ -47,6 +47,7 @@ def analyze_one_symbol(
 ) -> dict:
 
     df = load_daily(symbol, period=period)
+    st.write("DEBUG", symbol, df.shape)
 
     # 1) 완전 빈 데이터
     if df is None or df.empty:
